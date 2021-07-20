@@ -3,6 +3,7 @@
 ## Description
 
 Add a description for your Feature App.
+Here we go with releasing a version.
 
 #### Links
 [Demo] Add the link to your dev deployment, e.g. `https://oneaudi-feature-app-release-exmaple.cdn.dev.one.audi.com/main/index.html?spaceId=8l1afi0yxljy&environment=master&contentId=2h72eEIHOZNAceUPCADA05)` \
