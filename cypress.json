@@ -1,0 +1,41 @@
+{
+  "baseUrl": "http://localhost:3000",
+  "browsers": [
+    {
+      "name": "chrome",
+      "family": "chromium",
+      "channel": "stable",
+      "displayName": "Chrome",
+      "version": "88.0.4324.96",
+      "path": "",
+      "majorVersion": 88
+    },
+    {
+      "name": "firefox",
+      "family": "firefox",
+      "channel": "stable",
+      "displayName": "Firefox",
+      "version": "84.0.2",
+      "path": "",
+      "majorVersion": 84
+    }
+  ],
+  "componentFolder": "tests/cypress/component",
+  "downloadsFolder": "tests/cypress/downloads",
+  "fixturesFolder": "tests/cypress/fixtures",
+  "integrationFolder": "tests/cypress/specs",
+  "nodeVersion": "system",
+  "pluginsFile": "tests/cypress/plugins",
+  "reporter": "mochawesome",
+  "reporterOptions": {
+    "overwrite": false,
+    "html": false,
+    "json": true,
+    "reportDir": "tests/cypress/reports/json"
+  },
+  "screenshotsFolder": "tests/cypress/screenshots",
+  "supportFile": "tests/cypress/support",
+  "testFiles": "*.spec.ts",
+  "video": true,
+  "videosFolder": "tests/cypress/videos"
+}

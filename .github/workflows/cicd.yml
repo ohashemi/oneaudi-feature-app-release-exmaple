@@ -1,0 +1,292 @@
+# Continuous integration / Continuous delivery workflow
+#
+# Triggered by every push on a branch or by a new release, we run this workflow to build and test the application (job: 'ci')
+# If the workflow was triggered by a publish release event, we adjust the package version and publish the artefact to the GitHub npm registry.
+#
+# After a successful ci run, we trigger three more jobs (in parallel):
+# - deploy-aws-stack-dev (on main branch)
+# - deploy-aws-stack-prod (if pushing a release)
+#
+# The following GitHub repository secrets are necessary for a successful workflow execution:
+#
+# For all jobs:
+# - PACKAGES_TOKEN: Read and write packages from and to the GitHub npm registry
+#
+#
+# For 'deploy-aws-stack-dev' and 'deploy-aws-stack-prod' jobs we need to configure GitHub environment secrets:
+#
+# Environments "development" and "production", secrets:
+# - AWS_ACCOUNT_ID
+# - AWS_ACCESS_KEY_ID
+# - AWS_SECRET_ACCESS_KEY
+#
+#
+# If you would like to skip the ci workflow to execute, simply add '[ci skip]' to your commit message.
+# This mechanism is also used for version bumping (in order to avoid a subsequent workflow run).
+
+name: 'oneAudi :: Continuous integration / Continuous delivery'
+
+on:
+  push:
+    branches: '**'
+  release:
+    types: [published]
+
+jobs:
+  ci:
+    name: 'oneAudi :: Continuous integration'
+    if: ${{ !contains(github.event.head_commit.message, '[ci skip]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.release.target_commitish }}
+          token: ${{ secrets.PACKAGES_TOKEN }}
+
+      - name: Load node_modules and cypress cache
+        uses: actions/cache@v2
+        with:
+          path: |
+            **/node_modules
+            ~/.cache/Cypress
+          key: ${{ runner.os }}-modules-${{ hashFiles('**/yarn.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-modules
+            ${{ runner.os }}-cypress
+
+      - name: Setup node
+        uses: actions/setup-node@v2
+        with:
+          node-version: '14'
+          registry-url: https://npm.pkg.github.com
+          always-auth: true
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+
+      - name: Check format
+        run: yarn format:check
+
+      - name: Unit test
+        run: yarn test
+
+      - name: Automated acceptance test
+        id: acceptance-test
+        uses: cypress-io/github-action@v2
+        continue-on-error: true
+        with:
+          browser: chrome
+          headless: true
+          wait-on: 'http://localhost:3000'
+          start: yarn serve
+
+      - name: Generate acceptance test HTML report
+        run: yarn test:e2e-report
+
+      - name: Deploy acceptance test report in Github Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.PACKAGES_TOKEN }}
+          publish_dir: tests/cypress/reports/html
+          user_name: 'github-actions[bot]'
+          user_email: 'github-actions[bot]@users.noreply.github.com'
+
+      - name: Test accessibility and performance
+        run: yarn lighthouse:ci
+
+      - name: Save lighthouse report
+        uses: actions/upload-artifact@v2
+        with:
+          name: lighthouse-report
+          path: .lighthouseci
+
+      - name: Check test outcomes
+        run: |
+          if [ ${{ steps.acceptance-test.outcome }} = failure ]; then
+            echo -e '\033[0;31mWorkflow run has failed because the acceptance test did not pass. Check the logs or test report page for details.'; exit 1
+          fi
+
+      - name: Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/release'
+        env:
+          GITHUB_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+        run: npx semantic-release --repository-url https://github.com/volkswagen-onehub/${{ github.event.repository.name }}.git
+
+
+  # Depending on a successful CI/CD job, we trigger the deployment to the dedicated, self-contained AWS stack (for the main branch)
+  deploy-aws-stack-dev:
+    name: 'oneAudi :: Deploy AWS stack (dev)'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: development
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.release.target_commitish }}
+          token: ${{ secrets.PACKAGES_TOKEN }}
+
+      - name: Load node_modules and cypress cache
+        uses: actions/cache@v2
+        with:
+          path: |
+            **/node_modules
+            ~/.cache/Cypress
+          key: ${{ runner.os }}-modules-${{ hashFiles('**/yarn.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-modules
+            ${{ runner.os }}-cypress
+
+      - name: Setup node
+        uses: actions/setup-node@v2
+        with:
+          node-version: '14'
+          registry-url: https://npm.pkg.github.com
+          always-auth: true
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+
+      - name: Build for production
+        run: yarn build
+
+      - name: Deploy to dev
+        run: yarn deploy
+        if: env.AWS_ACCOUNT_ID != null && env.AWS_ACCESS_KEY_ID != null && env.AWS_SECRET_ACCESS_KEY != null 
+        env:
+          STAGE: dev
+          APP_NAME: oneaudi-feature-app-release-exmaple
+          APP_VERSION: main
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          API_BASE_DIRECTORY: ./dist/api
+          APP_BASE_DIRECTORY: ./dist/app
+
+      - name: Log skips reasons
+        if:  env.AWS_ACCOUNT_ID == null || env.AWS_ACCESS_KEY_ID == null || env.AWS_SECRET_ACCESS_KEY == null
+        env:
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: echo "::warning::Some steps were skipped because some of your Github secrets are not set, please check AWS_ACCOUNT_ID, AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY"
+
+  # Depending on a successful CI/CD job, we trigger the deployment to the dedicated, self-contained AWS stack (on release)
+  deploy-aws-stack-prod:
+    name: 'oneAudi :: Deploy AWS stack (prod)'
+    if: github.event_name == 'release'
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.release.target_commitish }}
+          token: ${{ secrets.PACKAGES_TOKEN }}
+
+      - name: Load node_modules and cypress cache
+        uses: actions/cache@v2
+        with:
+          path: |
+            **/node_modules
+            ~/.cache/Cypress
+          key: ${{ runner.os }}-modules-${{ hashFiles('**/yarn.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-modules
+            ${{ runner.os }}-cypress
+
+      - name: Setup node
+        uses: actions/setup-node@v2
+        with:
+          node-version: '14'
+          registry-url: https://npm.pkg.github.com
+          always-auth: true
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+
+      - name: Install package
+        run: yarn add @volkswagen-onehub/${{ github.event.repository.name }}@${{ github.event.release.tag_name }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+
+      - name: Deploy to production
+        run: yarn deploy
+        if: env.AWS_ACCOUNT_ID != null && env.AWS_ACCESS_KEY_ID != null && env.AWS_SECRET_ACCESS_KEY != null
+        env:
+          STAGE: prod
+          APP_NAME: oneaudi-feature-app-release-exmaple
+          APP_VERSION: ${{ github.event.release.tag_name }}
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          API_BASE_DIRECTORY: node_modules/@volkswagen-onehub/${{ github.event.repository.name }}/dist/api
+          APP_BASE_DIRECTORY: node_modules/@volkswagen-onehub/${{ github.event.repository.name }}/dist/app
+      - name: Log skips reasons
+        if: env.AWS_ACCOUNT_ID == null || env.AWS_ACCESS_KEY_ID == null || env.AWS_SECRET_ACCESS_KEY == null
+        env:
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: echo "::warning::Some steps were skipped because some of your Github secrets are not set, please check AWS_ACCOUNT_ID, AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY"
+
+  # When a release its done, depending on a successful CI/CD job, we trigger the publication of the new version to the oneAudi App Store
+  deploy-to-app-store:
+    name: 'oneAudi :: Deploy to App Store'
+    if: github.event_name == 'release'
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        if: env.PACKAGES_TOKEN != null
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.release.target_commitish }}
+          token: ${{ secrets.PACKAGES_TOKEN }}
+        env:
+          PACKAGES_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+
+      - name: Checkout publish to App Store Github Action
+        uses: actions/checkout@v2
+        if: env.PACKAGES_TOKEN != null
+        with:
+          repository: volkswagen-onehub/oneaudi-os-publish-to-app-store-action
+          ref: 'v1.1.4'
+          token: ${{ secrets.PACKAGES_TOKEN }}
+          path: .github/actions/oneaudi-os-publish-to-app-store-action
+        env:
+          PACKAGES_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+
+      - name: Publish feature app to App Store
+        if: env.X_APP_ACCESS_KEY != null
+        uses: ./.github/actions/oneaudi-os-publish-to-app-store-action
+        env:
+          X_APP_ACCESS_KEY: ${{ secrets.X_APP_ACCESS_KEY }}
+        with:
+          APP-VERSION: ${{ github.event.release.tag_name }}
+          X-APP-ACCESS-KEY: ${{ secrets.X_APP_ACCESS_KEY }}
+      - name: Log skips reasons
+        if: env.X_APP_ACCESS_KEY == null || env.PACKAGES_TOKEN == null
+        env:
+          X_APP_ACCESS_KEY: ${{ secrets.X_APP_ACCESS_KEY }}
+          PACKAGES_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+        run: echo "::warning::Some steps were skipped because some of your Github secrets are not set, please check X_APP_ACCESS_KEY and PACKAGES_TOKEN"
+

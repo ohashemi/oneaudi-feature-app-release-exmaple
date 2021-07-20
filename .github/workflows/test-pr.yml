@@ -1,0 +1,62 @@
+name: 'oneAudi :: Test Pull Request'
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.release.target_commitish }}
+          token: ${{ secrets.PACKAGES_TOKEN }}
+
+      - name: Load node_modules and cypress cache
+        uses: actions/cache@v2
+        with:
+          path: |
+            **/node_modules
+            ~/.cache/Cypress
+          key: ${{ runner.os }}-modules-${{ hashFiles('**/yarn.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-modules
+            ${{ runner.os }}-cypress
+
+      - name: Setup node
+        uses: actions/setup-node@v2
+        with:
+          node-version: '14'
+          registry-url: https://npm.pkg.github.com
+          always-auth: true
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+
+      - name: Unit test
+        run: yarn test
+
+      - name: Automated acceptance test
+        uses: cypress-io/github-action@v2
+        with:
+          browser: chrome
+          headless: true
+          wait-on: 'http://localhost:3000'
+          start: yarn serve
+
+      - name: Generate acceptance test HTML report
+        run: yarn test:e2e-report
+
+      - name: Deploy acceptance test report in Github Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.PACKAGES_TOKEN }}
+          publish_dir: tests/cypress/reports/html
+          user_name: 'github-actions[bot]'
+          user_email: 'github-actions[bot]@users.noreply.github.com'

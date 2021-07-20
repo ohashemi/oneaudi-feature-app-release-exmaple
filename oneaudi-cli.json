@@ -1,0 +1,18 @@
+{
+  "_pleaseNote": "Please do not touch this file. It will allow you to update your template in the future.",
+  "project": {
+    "features": {
+      "deployToFam": false,
+      "semanticRelease": true,
+      "semanticReleaseBranch": "release",
+      "useContentful": false,
+      "useEnzyme": true,
+      "useRocketChatIntegration": false
+    },
+    "template": "cfa-template"
+  },
+  "runtime": {
+    "node": "v14.16.0"
+  },
+  "version": "1.2.0"
+}
